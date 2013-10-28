@@ -23,4 +23,4 @@ specific to the cortex.
 
 Changed the read/write transfer status display to be more friendly
 to the eclipse IDE.  Eclipse does not handle "/r" so status was
-scrolling of the console.
+scrolling off the console.
