@@ -163,7 +163,7 @@ serial_err_t serial_setup(serial_t *h, const serial_baud_t baud, const serial_bi
 	if (
 		settings.c_iflag != h->newtio.c_iflag ||
 		settings.c_oflag != h->newtio.c_oflag ||
-		settings.c_cflag != h->newtio.c_cflag ||
+		//settings.c_cflag != h->newtio.c_cflag ||
 		settings.c_lflag != h->newtio.c_lflag
 	)	return SERIAL_ERR_UNKNOWN;
 
