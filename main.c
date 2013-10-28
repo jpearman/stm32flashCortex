@@ -22,7 +22,13 @@
 /*        this will work with the cortex.                                    */
 /*        addition of a "quiet" mode to skip debug and progress printing     */
 /*                                                                           */
-/*                                                                           */
+/*        Revision 27 Oct 2013                                               */
+/*        Improved serial control, now detects if the cortext is in flash    */
+/*        load mode.  Requests system status prior to sending init sequence  */
+/*        simplified status output that plays well with eclipse/.            */
+/*        fixed bug in win serial device open.                               */
+/*        workaround in serial_open for OSX so that new prog cable can be    */
+/*        used                                                               */
 /*                                                                           */
 /*---------------------------------------------------------------------------*/
 /*                                                                           */
@@ -89,12 +95,17 @@ char            force_binary    = 0;
 char            reset_flag      = 1;
 char            *filename;
 
-int             vex_user_program = 0;
+int             vex_user_program = 1;  // now default to yes
 char            quietmode        = 0;
 
 /* functions */
-int     vex_enter_user_program_rts( void );
+int     vex_detect_mode( void );
+int     vex_initialize( void );
+
+int     vex_sys_status_cmd( void );
+int     vex_reset_slave_cmd( void );
 int     vex_enter_user_program_cmd( void );
+int     vex_enter_user_program_rts( void );
 
 int     read_flash( void );
 int     write_unprotect_flash( void );
@@ -105,6 +116,9 @@ parser_err_t    open_parser(void);
 int  parse_options(int argc, char *argv[]);
 void show_help(char *name);
 
+/*---------------------------------------------------------------------------*/
+/*                                                                           */
+
 int main(int argc, char* argv[])
 {
         int ret = 1;
@@ -113,9 +127,11 @@ int main(int argc, char* argv[])
         if (parse_options(argc, argv) != 0)
             return(0);
 
-        if(!quietmode)
-            printf("VEX cortex flash loader\n\n");
-    
+        if(!quietmode){
+            printf("VEX cortex flash loader\n");
+            // added to help with eclipse tool management
+            printf("Working directory %s\n\n", getcwd(NULL, 0));
+            }    
 
         // Open file parser
         perr = open_parser();
@@ -125,23 +141,30 @@ int main(int argc, char* argv[])
 
         // Open serial device            
         serial = serial_open(device);
-        if (!serial)
-            {
+        if (!serial) {
             perror(device);
             cleanup();
             return(-1);
             }
 
-        // Put cortex into boot load mode
-        if(vex_user_program == 2)
-            vex_enter_user_program_rts();
-        else
-        if(vex_user_program != 0)
-            vex_enter_user_program_cmd();
-
         // Setup serial port for bootloader
-        if (serial_setup( serial, baudRate, SERIAL_BITS_8, SERIAL_PARITY_EVEN, SERIAL_STOPBIT_1) != SERIAL_ERR_OK)
-            {
+        if (serial_setup( serial, baudRate, SERIAL_BITS_8, SERIAL_PARITY_EVEN, SERIAL_STOPBIT_1) != SERIAL_ERR_OK) {
+            perror(device);
+            cleanup();
+            return(-1);
+            }
+
+        // user may have pressed program button so test if we are
+        // already in boot load mode waiting for INIT or if we already
+        // have sent auto baud
+        if( vex_detect_mode() ) {
+            if( vex_initialize() != 1 )
+                return(-1);
+            }
+            
+        // We may have change parity if not in bootloader mode
+        // Setup serial port for bootloader
+        if (serial_setup( serial, baudRate, SERIAL_BITS_8, SERIAL_PARITY_EVEN, SERIAL_STOPBIT_1) != SERIAL_ERR_OK) {
             perror(device);
             cleanup();
             return(-1);
@@ -157,14 +180,10 @@ int main(int argc, char* argv[])
 
         // 1/10 sec delay before comms start
         usleep(100000);
-        
-        // Show serial configuration for debug
-        if(!quietmode)
-            printf("Serial Config: %s\n", serial_get_setup_str(serial));
-        
-        // Init the STM32 communicationst 
-        if (!(stm = stm32_init(serial, init_flag)))
-            {
+                
+        // Init the STM32 communicationst
+        // we may already be in bootload mode
+        if (!(stm = stm32_init(serial, init_flag))) {
             cleanup();
             return(-1);
             }
@@ -183,8 +202,7 @@ int main(int argc, char* argv[])
             
         // Read flash if necessary
         if( rd ) {
-            if( read_flash() < 0 )
-                {
+            if( read_flash() < 0 ) {
                 cleanup();
                 return(-1);
                 }
@@ -193,8 +211,7 @@ int main(int argc, char* argv[])
             write_unprotect_flash();
             }    
         else if (wr) {
-            if( write_flash() < 0 )
-                {
+            if( write_flash() < 0 ) {
                 cleanup();
                 return(-1);
                 }
@@ -221,19 +238,6 @@ int main(int argc, char* argv[])
                 if(!quietmode)
                     fprintf(stdout, "failed.\n");
            }
-
-        // reset device ?
-        /*
-        if (stm && reset_flag && !exec_flag)
-            {
-            fprintf(stdout, "\nResetting device... ");
-            fflush(stdout);
-            if (stm32_reset_device(stm))
-                fprintf(stdout, "done.\n");
-            else
-                fprintf(stdout, "failed.\n");
-            }
-        */
         
         // deallocate memory etc.
         cleanup();
@@ -242,29 +246,187 @@ int main(int argc, char* argv[])
         return ret;
 }
 
-/*-----------------------------------------------------------------------------*/
-/*                                                                             */
-/*  Enter user boot by sending Enter bootloader command                        */
-/*                                                                             */
-/*-----------------------------------------------------------------------------*/
+/*---------------------------------------------------------------------------*/
+/*  Try and detect the cortex in flash load mode, either waiting for the     */
+/*  initial autobaud sequence or waiting for bootload commands               */
+/*  @returns -1 = error or modofied init_flag                                */
+/*---------------------------------------------------------------------------*/
 
 int
-vex_enter_user_program_cmd()
+vex_detect_mode()
 {
-    char    buf[5] = {0xC9, 0x36, 0xB8, 0x47, 0x25 };
-
-    if(serial)
+    char buf[2]  = {0x7F};
+    char rep[16] = {0x00};
+    int  retry;
+    
+    if( serial )
         {
-        // Setup serial port
-        if (serial_setup( serial, baudRate, SERIAL_BITS_8, SERIAL_PARITY_NONE, SERIAL_STOPBIT_1) != SERIAL_ERR_OK)
+        // Setup serial port for bootloader
+        if (serial_setup( serial, baudRate, SERIAL_BITS_8, SERIAL_PARITY_EVEN, SERIAL_STOPBIT_1) != SERIAL_ERR_OK)
             {
             perror(device);
             cleanup();
             return(-1);
             }
 
-        usleep(10000);
+        // Try sending auto baud a few times and see what we get
+        for(retry=0;retry<5;retry++)
+            {
+            serial_write( serial, buf, 1 );
+            if( serial_read( serial, rep, 1) == SERIAL_ERR_OK )
+                {
+                // Lets ssee what we got
+                if( rep[0] == 0x79 )
+                    {
+                    // we are done, user must have pushed prog button
+                    init_flag = 0;
+                    return( init_flag );
+                    }
+                else
+                if( rep[0] == 0x1F )
+                    {
+                    // we are also done, see if we can get status
+                    buf[0] = 0x00;
+                    buf[1] = 0xFF;
+                    serial_write( serial, buf, 2 );
+                    // check status is good
+                    if( (serial_read( serial, rep, 15) == SERIAL_ERR_OK) && rep[0] == 0x79 )
+                        init_flag = 0;
+                    // OK, we are already in bootload mode for some reason                    
+                    return( init_flag );
+                    }
+                }
+            }
+        }
         
+    // no luck if we are here, not in bootloader mode.
+    return( init_flag );
+}
+
+/*---------------------------------------------------------------------------*/
+/*  Initialize vex by sending enter boot load sequence                       */
+/*---------------------------------------------------------------------------*/
+
+int
+vex_initialize()
+{
+    char    zero[4] = {0x00, 0x00, 0x00, 0x00};
+
+    if(serial)
+        {        
+        // Setup serial port for VEX commands
+        if (serial_setup( serial, baudRate, SERIAL_BITS_8, SERIAL_PARITY_NONE, SERIAL_STOPBIT_1) != SERIAL_ERR_OK)
+            {
+            perror(device);
+            cleanup();
+            return(-1);
+            }
+        
+        // send some zeros, there are bugs in serial driver
+        serial_write( serial, zero, 4 );
+
+        // Check system status
+        if( !vex_sys_status_cmd() ) {      
+            // sleep
+            usleep(10000);
+            
+            // Try again
+            if( !vex_sys_status_cmd() ) {
+                printf("No VEX system detected\n");
+                cleanup();
+                return(-1);
+                }
+            }
+            
+        // Put cortex into boot load mode
+        if(vex_user_program == 2)
+            vex_enter_user_program_rts();
+        else
+        if(vex_user_program != 0)
+            vex_enter_user_program_cmd();
+        return(1);
+        }
+    return(0);
+}
+
+/*-----------------------------------------------------------------------------*/
+/*  Get VEX system status                                                      */
+/*-----------------------------------------------------------------------------*/
+
+int
+vex_sys_status_cmd()
+{
+    unsigned char    buf[5] = { 0xC9, 0x36, 0xB8, 0x47, 0x21 };
+    unsigned char    rep[16];
+    
+    if(serial)
+        {        
+        if(!quietmode)
+            printf("Send system status request\n");
+
+        if( serial_write( serial, buf, 5 ) == SERIAL_ERR_OK ) {
+            // read reply - should be 14 bytes
+            if( serial_read( serial, rep, 14 ) == SERIAL_ERR_OK ) {
+                if(!quietmode) {
+                    int i;
+                    
+                    // double check reply
+                    if( rep[0] != 0xAA || rep[1] != 0x55 || rep[2] != 0x21 || rep[3] != 0x0A )
+                        return(0);
+                        
+                    // Show reply
+                    printf("Status ");
+                    for(i=0;i<14;i++)
+                        printf("%02X ", rep[i]);
+                    printf("\n");
+                    
+                    // Decode some info
+                    printf("Connection       : ");
+                    if( (rep[11] & 0x30) == 0x10 )
+                        printf("USB Tether\n");
+                    else
+                    if( (rep[11] & 0x30) == 0x20 )
+                        printf("USB Direct connection\n");
+                    else
+                    if( (rep[11] & 0x30) == 0x00 )
+                        printf("WiFi\n");
+                    else
+                        printf("Unknown\n");
+                    
+                    if( (rep[11] & 0x30) != 0x20 )
+                        printf("Joystick firmware: %d.%2d\n", rep[4], rep[5]);
+                    else
+                        printf("Joystick firmware: NA\n" );
+                        
+                    printf("Master firmware  : %d.%2d\n", rep[6], rep[7]);
+                    printf("Joystick battery : %.2fV\n", (double)rep[8]  * 0.059);
+                    printf("Cortex battery   : %.2fV\n", (double)rep[9]  * 0.059);
+                    printf("Backup battery   : %.2fV\n", (double)rep[10] * 0.059);
+
+                    printf("\n");
+                    }
+                }
+            else
+                return(0);
+            }
+        else
+            return(0);
+        }
+
+    return(1);
+}
+
+/*-----------------------------------------------------------------------------*/
+/*  Enter user boot by sending Enter bootloader command                        */
+/*-----------------------------------------------------------------------------*/
+
+int
+vex_enter_user_program_cmd()
+{
+    char    buf[5] = {0xC9, 0x36, 0xB8, 0x47, 0x25 };
+    
+    if(serial)
+        {        
         if(!quietmode)
             printf("Send bootloader start command\n");
 
@@ -280,11 +442,34 @@ vex_enter_user_program_cmd()
     return(1);
 }
 
+/*-----------------------------------------------------------------------------*/
+/*  Reset the user processor                                                   */
+/*-----------------------------------------------------------------------------*/
+
+int
+vex_reset_slave_cmd()
+{
+    char    buf[5] = {0xC9, 0x36, 0xB8, 0x47, 0x24 };
+    
+    if(serial)
+        {        
+        if(!quietmode)
+            printf("Send reset slave command\n");
+
+        serial_write( serial, buf, 5 );
+        serial_write( serial, buf, 5 );
+        serial_write( serial, buf, 5 );
+        serial_write( serial, buf, 5 );
+        serial_write( serial, buf, 5 );
+    
+        usleep(250000);
+        }
+
+    return(1);
+}
 
 /*-----------------------------------------------------------------------------*/
-/*                                                                             */
 /*  Enter user boot by pulsing RTS line                                        */
-/*                                                                             */
 /*-----------------------------------------------------------------------------*/
 
 int
@@ -330,8 +515,39 @@ vex_enter_user_program_rts()
 }
 
 /*-----------------------------------------------------------------------------*/
-/*                                                                             */
-/*                                                                             */
+/*    Simple profress display that plays well with eclipse                     */
+/*-----------------------------------------------------------------------------*/
+
+void
+show_progress( int done, int size )
+{
+    static  int     dot = 0;
+    int per;
+        
+    if(done == 0 )
+        dot = 0;
+    
+    if( done < size ) {
+        per = (100 * done / size);        
+        if( per / 2 == dot ) {
+            if( per % 10 == 0 )
+                fprintf(stdout,"%2d", per );
+            else
+                fprintf(stdout,".");
+            dot++;
+            }
+        fflush(stdout);
+    }
+    else {
+        // check to see if we made 100%
+        if(dot != 51)
+            fprintf(stdout,"100" );
+        fprintf(stdout,"\n");
+    }
+}
+
+/*-----------------------------------------------------------------------------*/
+/*  Read flash contents to binary file                                         */
 /*-----------------------------------------------------------------------------*/
 
 int
@@ -356,6 +572,7 @@ read_flash()
 
         addr = stm->dev->fl_start;
         
+        show_progress( 0, stm->dev->fl_end - stm->dev->fl_start );
         while(addr < stm->dev->fl_end)
             {
             uint32_t left   = stm->dev->fl_end - addr;
@@ -370,9 +587,10 @@ read_flash()
             addr += len;
 
             if(!quietmode) {
-                fprintf(stdout, "Read address 0x%08x (%.2f%%) \r",addr,
-                                (100.0f / (float)(stm->dev->fl_end - stm->dev->fl_start)) * (float)(addr - stm->dev->fl_start) );
-                fflush(stdout);
+                show_progress( addr - stm->dev->fl_start, stm->dev->fl_end - stm->dev->fl_start );
+                //fprintf(stdout, "Read address 0x%08x (%.2f%%) \r",addr,
+                //                (100.0f / (float)(stm->dev->fl_end - stm->dev->fl_start)) * (float)(addr - stm->dev->fl_start) );
+                //fflush(stdout);
                 }
             }
             
@@ -386,8 +604,7 @@ read_flash()
 }
 
 /*-----------------------------------------------------------------------------*/
-/*                                                                             */
-/*                                                                             */
+/*  Unprotect flash to allow writing                                           */
 /*-----------------------------------------------------------------------------*/
 
 int
@@ -412,9 +629,10 @@ write_unprotect_flash()
     return(0);
 }
 
+
+
 /*-----------------------------------------------------------------------------*/
-/*                                                                             */
-/*                                                                             */
+/*  Write file to flash                                                        */
 /*-----------------------------------------------------------------------------*/
 
 int
@@ -443,6 +661,8 @@ write_flash()
 
         addr = stm->dev->fl_start;
 
+        show_progress( 0, size );
+        
         while(addr < stm->dev->fl_end && offset < size)
             {
             uint32_t left   = stm->dev->fl_end - addr;
@@ -493,14 +713,16 @@ write_flash()
             offset  += len;
 
             if(!quietmode) {
-                fprintf(stdout, "Wrote %saddress 0x%08x (%.2f%%) \r", verify ? "and verified " : "", addr, (100.0f / size) * offset );
-                fflush(stdout);
+                show_progress( offset, size );
+//                fprintf(stdout, "Wrote %saddress 0x%08x (%.2f%%) \r", verify ? "and verified " : "", addr, (100.0f / size) * offset );
+//                fflush(stdout);
                 }
             }
-
-        if(!quietmode)
-            printf("\n");
             
+        if(!quietmode)
+            if( verify )
+                fprintf(stdout,"Verify OK\n");
+        
         return(1);
         }
         
@@ -509,8 +731,7 @@ write_flash()
 
 
 /*-----------------------------------------------------------------------------*/
-/*                                                                             */
-/*                                                                             */
+/*  close devices                                                              */
 /*-----------------------------------------------------------------------------*/
 
 void
@@ -529,8 +750,7 @@ cleanup()
 }
 
 /*-----------------------------------------------------------------------------*/
-/*                                                                             */
-/*                                                                             */
+/*  Try and determine what type of file the user want to download              */
 /*-----------------------------------------------------------------------------*/
 
 parser_err_t
@@ -611,13 +831,16 @@ open_parser()
 
 int parse_options(int argc, char *argv[]) {
         int c;
-        while((c = getopt(argc, argv, "b:r:w:e:vn:g:fchuXq12")) != -1) {
+        while((c = getopt(argc, argv, "b:r:w:e:vn:g:GfchuXq012")) != -1) {
                 switch(c) {
                         case 'X':
                                 if( vex_user_program == 0 )
                                     vex_user_program = 1;
                                 break;
                                 
+                        case '0':
+                                vex_user_program = 0;
+                                break;
                         case '1':
                                 vex_user_program = 1;
                                 break;
@@ -674,6 +897,11 @@ int parse_options(int argc, char *argv[]) {
                         case 'g':
                                 exec_flag = 1;
                                 execute   = strtoul(optarg, NULL, 0);
+                                break;
+
+                        case 'G':
+                                exec_flag = 1;
+                                execute   = 0;
                                 break;
 
                         case 'f':
@@ -737,8 +965,10 @@ void show_help(char *name) {
                 "       -v              Verify writes\n"
                 "       -n count        Retry failed writes up to count times (default 10)\n"
                 "       -g address      Start execution at specified address (0 = flash start)\n"
+                "       -G              Start execution at flash start address\n"
                 "       -f              Force binary parser\n"
                 "       -h              Show this help\n"
+                "       -q              quietmode, no status messages\n"
                 "       -c              Resume the connection (don't send initial INIT)\n"
                 "                       *Baud rate must be kept the same as the first init*\n"
                 "                       This is useful if the reset fails\n"
@@ -755,7 +985,7 @@ void show_help(char *name) {
 #ifdef __WIN32__
                 "               %s -X -w filename -v -g 0x0 COM1\n"
 #else
-                "               %s -X -w filename -v -g 0x0 //dev/tty.usbserial\n"
+                "               %s -X -w filename -v -g 0x0 /dev/tty.usbserial\n"
 #endif
                 "\n"
                 "       Read flash to file:\n"

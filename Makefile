@@ -5,7 +5,7 @@ export AR
 
 all:
 	$(MAKE) -C parsers
-	$(CC) -g -o cortexflash -I./ \
+	$(CC) -o cortexflash -I./ \
 		main.c \
 		utils.c \
 		stm32.c \
@@ -17,7 +17,7 @@ all:
 
 clean:
 	$(MAKE) -C parsers clean
-	rm -f cortexflash
+	rm -rf *.o
 
 install: all
 	cp cortexflash /usr/local/bin
