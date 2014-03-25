@@ -1,4 +1,11 @@
+UNAME := $(shell uname)
+
+ifeq ($(UNAME), Darwin)
+CC = $(CROSS_COMPILE)gcc -arch i386 -arch x86_64  -mmacosx-version-min=10.6
+else
 CC = $(CROSS_COMPILE)gcc
+endif
+
 AR = $(CROSS_COMPILE)ar
 export CC
 export AR
@@ -11,8 +18,8 @@ all:
 		stm32.c \
 		serial_common.c \
 		serial_platform.c \
-		parsers/parsers.a \
 		stm32/stmreset_binary.c \
+		parsers/*.o \
 		-Wall
 
 clean:

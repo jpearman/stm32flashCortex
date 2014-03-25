@@ -81,7 +81,7 @@ serial_t* serial_open(const char *device)
 	GetCommState(h->fd, &h->oldtio); /* Retrieve port parameters */
 	GetCommState(h->fd, &h->newtio); /* Retrieve port parameters */
 
-	//PurgeComm(h->fd, PURGE_RXABORT | PURGE_TXCLEAR | PURGE_TXABORT | PURGE_TXCLEAR);
+	PurgeComm(h->fd, PURGE_RXABORT | PURGE_RXCLEAR | PURGE_TXABORT | PURGE_TXCLEAR);
 
 	return h;
 }
@@ -100,7 +100,7 @@ void serial_flush(const serial_t *h)
 {
 	assert(h && (h->fd != INVALID_HANDLE_VALUE));
 	/* We shouldn't need to flush in non-overlapping (blocking) mode */
-	//tcflush(h->fd, TCIFLUSH);
+	PurgeComm(h->fd, PURGE_RXABORT | PURGE_RXCLEAR | PURGE_TXABORT | PURGE_TXCLEAR);
 }
 
 serial_err_t serial_setup(serial_t *h, 

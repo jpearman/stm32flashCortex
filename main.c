@@ -25,10 +25,17 @@
 /*        Revision 27 Oct 2013                                               */
 /*        Improved serial control, now detects if the cortext is in flash    */
 /*        load mode.  Requests system status prior to sending init sequence  */
-/*        simplified status output that plays well with eclipse/.            */
+/*        simplified status output that plays well with eclipse.             */
 /*        fixed bug in win serial device open.                               */
 /*        workaround in serial_open for OSX so that new prog cable can be    */
 /*        used                                                               */
+/*                                                                           */
+/*        Revision 24 Match 2014                                             */
+/*        Improved compatibility with the new VEX USB programming cable      */
+/*        under OSX 10.9.                                                    */
+/*        Improved status display, percentages now correctly shown for       */
+/*        smaller (ie. pros) downloads.                                      */
+/*        OSX builds for 64 and 32 bit ans is compatible with 10.6-10.9      */
 /*                                                                           */
 /*---------------------------------------------------------------------------*/
 /*                                                                           */
@@ -154,12 +161,14 @@ int main(int argc, char* argv[])
             return(-1);
             }
 
-        // user may have pressed program button so test if we are
+		// user may have pressed program button so test if we are
         // already in boot load mode waiting for INIT or if we already
         // have sent auto baud
         if( vex_detect_mode() ) {
-            if( vex_initialize() != 1 )
+	        if( vex_initialize() != 1 ) {
+                cleanup();
                 return(-1);
+                }
             }
             
         // We may have change parity if not in bootloader mode
@@ -259,6 +268,9 @@ vex_detect_mode()
     char rep[16] = {0x00};
     int  retry;
     
+	// sleep a while
+    usleep(100000);
+    
     if( serial )
         {
         // Setup serial port for bootloader
@@ -269,6 +281,9 @@ vex_detect_mode()
             return(-1);
             }
 
+		// sleep a while
+    	usleep(100000);
+        
         // Try sending auto baud a few times and see what we get
         for(retry=0;retry<5;retry++)
             {
@@ -312,6 +327,9 @@ vex_initialize()
 {
     char    zero[4] = {0x00, 0x00, 0x00, 0x00};
 
+	// sleep a while
+    usleep(100000);
+    
     if(serial)
         {        
         // Setup serial port for VEX commands
@@ -322,18 +340,23 @@ vex_initialize()
             return(-1);
             }
         
+        //sleep a while
+        usleep(100000);
+        
         // send some zeros, there are bugs in serial driver
         serial_write( serial, zero, 4 );
 
+        //sleep a while
+        usleep(100000);
+
         // Check system status
         if( !vex_sys_status_cmd() ) {      
-            // sleep
-            usleep(10000);
+            // sleep a while
+            usleep(100000);
             
             // Try again
             if( !vex_sys_status_cmd() ) {
                 printf("No VEX system detected\n");
-                cleanup();
                 return(-1);
                 }
             }
@@ -364,6 +387,10 @@ vex_sys_status_cmd()
         if(!quietmode)
             printf("Send system status request\n");
 
+		// cortex may be sending data so flush
+		serial_flush( serial );
+		
+		// try and get status
         if( serial_write( serial, buf, 5 ) == SERIAL_ERR_OK ) {
             // read reply - should be 14 bytes
             if( serial_read( serial, rep, 14 ) == SERIAL_ERR_OK ) {
@@ -394,11 +421,11 @@ vex_sys_status_cmd()
                         printf("Unknown\n");
                     
                     if( (rep[11] & 0x30) != 0x20 )
-                        printf("Joystick firmware: %d.%2d\n", rep[4], rep[5]);
+                        printf("Joystick firmware: %d.%02d\n", rep[4], rep[5]);
                     else
                         printf("Joystick firmware: NA\n" );
                         
-                    printf("Master firmware  : %d.%2d\n", rep[6], rep[7]);
+                    printf("Master firmware  : %d.%02d\n", rep[6], rep[7]);
                     printf("Joystick battery : %.2fV\n", (double)rep[8]  * 0.059);
                     printf("Cortex battery   : %.2fV\n", (double)rep[9]  * 0.059);
                     printf("Backup battery   : %.2fV\n", (double)rep[10] * 0.059);
@@ -515,7 +542,7 @@ vex_enter_user_program_rts()
 }
 
 /*-----------------------------------------------------------------------------*/
-/*    Simple profress display that plays well with eclipse                     */
+/*    Simple progress display that plays well with eclipse                     */
 /*-----------------------------------------------------------------------------*/
 
 void
@@ -528,10 +555,10 @@ show_progress( int done, int size )
         dot = 0;
     
     if( done < size ) {
-        per = (100 * done / size);        
+        per = (100 * done / size);  
         if( per / 2 == dot ) {
-            if( per % 10 == 0 )
-                fprintf(stdout,"%2d", per );
+            if( dot % 5 == 0 )
+                fprintf(stdout,"%d", dot*2 );
             else
                 fprintf(stdout,".");
             dot++;

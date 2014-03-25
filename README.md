@@ -14,6 +14,7 @@ this will work with the cortex.
 addition of a "quiet" mode to skip debug and progress printing
 
 Changes Oct 28 2013
+-------------------
 
 Fixed bug in win32 open com port code, ports above COM9 were not
 handled correctly.
@@ -24,3 +25,16 @@ specific to the cortex.
 Changed the read/write transfer status display to be more friendly
 to the eclipse IDE.  Eclipse does not handle "/r" so status was
 scrolling off the console.
+
+Changes 24 March 2014
+---------------------
+
+Improved handling of the new VEX USB programming cable under OSX
+10.9.  Delays were needed between port setup and the first data
+to be sent.
+
+Improved handling of initialization if the cortex user program
+is sending characters to the programming port, buffers are
+flushed prior to system status requests.
+
+Improbed status, percent markers now work for small downloads.
