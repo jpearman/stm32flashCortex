@@ -70,6 +70,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <assert.h>
+#include <sys/time.h>
 
 #include "utils.h"
 #include "serial.h"
@@ -415,8 +416,11 @@ vex_sys_status_cmd()
                     if( (rep[11] & 0x30) == 0x20 )
                         printf("USB Direct connection\n");
                     else
-                    if( (rep[11] & 0x30) == 0x00 )
-                        printf("WiFi\n");
+                    if( (rep[11] & 0x34) == 0x00 )
+                        printf("WiFi (VEXnet 1.0)\n");
+                    else
+                    if( (rep[11] & 0x04) == 0x04 )
+                        printf("WiFi (VEXnet 2.0)\n");
                     else
                         printf("Unknown\n");
                     
@@ -551,12 +555,14 @@ show_progress( int done, int size )
     static  int     dot = 0;
     int per;
         
-    if(done == 0 )
+    if(done == 0 ) {
         dot = 0;
+        printf("%d bytes to transfer\n", size );
+        }
     
     if( done < size ) {
         per = (100 * done / size);  
-        if( per / 2 == dot ) {
+        if( per / 2 >= dot ) {
             if( dot % 5 == 0 )
                 fprintf(stdout,"%d", dot*2 );
             else
@@ -571,6 +577,32 @@ show_progress( int done, int size )
             fprintf(stdout,"100" );
         fprintf(stdout,"\n");
     }
+}
+
+/*-----------------------------------------------------------------------------*/
+/*  Transfer timing                                                            */
+/*-----------------------------------------------------------------------------*/
+
+void
+transfer_timer( int action, int size )
+{
+    static  struct timeval timestart, timeend;
+    double  tmp1, tmp2, time_secs;
+
+    if( !action )
+         gettimeofday( &timestart, NULL );
+    else
+        {
+        gettimeofday( &timeend, NULL );
+        // calculate elapsed time in mS
+        tmp1 = timestart.tv_sec + (timestart.tv_usec / 1000000.0);
+        tmp2 = timeend.tv_sec   + (timeend.tv_usec   / 1000000.0);
+
+        time_secs = tmp2 - tmp1;
+
+        if(!quietmode)
+            printf("Transfer time %6.2f seconds, data rate %5.0f bytes/sec\n", time_secs, size/time_secs );
+        }
 }
 
 /*-----------------------------------------------------------------------------*/
@@ -600,6 +632,8 @@ read_flash()
         addr = stm->dev->fl_start;
         
         show_progress( 0, stm->dev->fl_end - stm->dev->fl_start );
+        transfer_timer(0, 0);
+
         while(addr < stm->dev->fl_end)
             {
             uint32_t left   = stm->dev->fl_end - addr;
@@ -624,6 +658,9 @@ read_flash()
         if(!quietmode)
             fprintf(stdout, "\nDone.\n");
 
+        // show transfer time
+        transfer_timer(1, stm->dev->fl_end - stm->dev->fl_start);
+        
         return(1);
         }
         
@@ -689,7 +726,8 @@ write_flash()
         addr = stm->dev->fl_start;
 
         show_progress( 0, size );
-        
+        transfer_timer(0, 0);
+
         while(addr < stm->dev->fl_end && offset < size)
             {
             uint32_t left   = stm->dev->fl_end - addr;
@@ -746,6 +784,9 @@ write_flash()
                 }
             }
             
+        // show transfer time
+        transfer_timer(1, size);
+        
         if(!quietmode)
             if( verify )
                 fprintf(stdout,"Verify OK\n");
