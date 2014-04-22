@@ -30,13 +30,16 @@
 /*        workaround in serial_open for OSX so that new prog cable can be    */
 /*        used                                                               */
 /*                                                                           */
-/*        Revision 24 Match 2014                                             */
+/*        Revision 24 March 2014                                             */
 /*        Improved compatibility with the new VEX USB programming cable      */
 /*        under OSX 10.9.                                                    */
 /*        Improved status display, percentages now correctly shown for       */
 /*        smaller (ie. pros) downloads.                                      */
 /*        OSX builds for 64 and 32 bit ans is compatible with 10.6-10.9      */
 /*                                                                           */
+/*        Revision 22 April 2014                                             */
+/*        Added detection and status for VEXnet 2.0                          */
+/*        Added measurement if transfer time                                 */
 /*---------------------------------------------------------------------------*/
 /*                                                                           */
 
